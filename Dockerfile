@@ -4,7 +4,7 @@ ARG ORACLE_VERSION
 ENV ORACLE_VERSION=${ORACLE_VERSION}
 ENV LD_LIBRARY_PATH "/usr/lib/oracle/${ORACLE_VERSION}/client64/lib"
 
-RUN apt-get -qq update && apt-get install --no-install-recommends -qq libaio1 alien unzip
+RUN apt-get -qq update && apt-get install --no-install-recommends -qq libaio1 unzip
 COPY instantclient-basic-linux.x64-19.5.0.0.0dbru.zip /
 RUN unzip /instantclient-basic-linux.x64-19.5.0.0.0dbru.zip -d /
 
