@@ -14,6 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/kkyr/fig"
 	_ "github.com/lib/pq"
+	"github.com/mattn/go-oci8"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
@@ -51,7 +52,7 @@ type Query struct {
 }
 
 const (
-	namespace = "postgresdb"
+	namespace = "db"
 	exporter  = "exporter"
 )
 
@@ -198,7 +199,7 @@ func dbToFloat64(t interface{}) (float64, error) {
 	case nil:
 		return math.NaN(), nil
 	default:
-		return math.NaN(), err
+		return math.NaN(), nil
 	}
 }
 
@@ -227,6 +228,10 @@ func main() {
 		// connect to database
 		if database.Driver == "postgres" {
 			database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable", database.User, database.Password, database.Host, database.Port, database.Database)
+		} else if database.Driver == "oracle" || database.Driver == "oci8" {
+			database.Dsn = oci8.QueryEscape(database.User) + "/" + oci8.QueryEscape(database.Password) +
+				"@" + database.Host + ":" + strconv.Itoa(database.Port) + "/" + database.Database
+			database.Driver = "oci8"
 		} else {
 			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", database.User, database.Password, database.Host, database.Port, database.Database)
 		}
