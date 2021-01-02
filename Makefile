@@ -1,4 +1,4 @@
-VERSION        ?= 0.1.0
+VERSION        ?= 0.1.1
 ORACLE_VERSION ?= 19.5
 LDFLAGS        := -X main.Version=$(VERSION)
 GOFLAGS        := -ldflags "$(LDFLAGS) -s -w"
@@ -16,10 +16,10 @@ download: $(ORA_ZIP)
 build: download docker
 
 clean:
-	rm -rf ./prometheus_db_exporter
+	rm -rf ./prometheus-db-exporter
 
 docker:
-	docker build $(BUILD_ARGS) -t "juev/prometheus_db_exporter:$(VERSION)" .
-	docker tag "juev/prometheus_db_exporter:$(VERSION)" "juev/prometheus_db_exporter:latest"
+	docker build $(BUILD_ARGS) -t "juev/prometheus-db-exporter:$(VERSION)" .
+	docker tag "juev/prometheus-db-exporter:$(VERSION)" "juev/prometheus-db-exporter:latest"
 
 .PHONY: build clean docker download

@@ -35,6 +35,9 @@ ARG ORACLE_VERSION
 ENV ORACLE_VERSION=${ORACLE_VERSION}
 ENV LD_LIBRARY_PATH "/instantclient_19_5"
 
+RUN sh -c "echo /instantclient_19_5 > /etc/ld.so.conf.d/oracle-instantclient.conf"
+RUN ldconfig
+
 COPY --from=build /go/src/prometheus_db_exporter/prometheus_db_exporter /entrypoint
 
 EXPOSE 9103
