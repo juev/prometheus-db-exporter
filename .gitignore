@@ -16,3 +16,5 @@
 
 config.yaml
 prometheus_db_exporter
+*.rpm
+*.zip
