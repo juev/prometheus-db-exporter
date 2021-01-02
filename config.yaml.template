@@ -1,0 +1,32 @@
+host: 0.0.0.0
+port: 9102
+queryTimeout: 5
+
+databases:
+  - host: 'dummy'
+    user: dummy
+    port: 5432
+    password: 'password'
+    database: dummy
+    driver: postgres
+    maxIdleConns: 10
+    maxOpenConns: 10
+    queries:
+      - sql: "select numbers1 from dummy"
+        name: value1
+        interval: 1
+      - sql: "select numbers2 from dummy"
+        name: value2
+        interval: 1
+  - host: 'dummy2'
+    user: dummy2
+    port: 5432
+    password: 'password2'
+    database: dummy2
+    driver: oci8
+    maxIdleConns: 10
+    maxOpenConns: 10
+    queries:
+      - sql: "select numbers3 from dummy"
+        name: value3
+        interval: 2
