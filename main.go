@@ -24,7 +24,7 @@ import (
 // Configuration struct
 type Configuration struct {
 	Host         string `fig:"host" default:"0.0.0.0"`
-	Port         int    `fig:"port" default:"9102"`
+	Port         int    `fig:"port" default:"9103"`
 	QueryTimeout int    `fig:"querytimeout" default:"30"`
 	Databases    []Database
 }
