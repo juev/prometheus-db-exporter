@@ -1,4 +1,4 @@
-module github.com/juev/prometheus_db_exporter
+module github.com/juev/prometheus-db-exporter
 
 go 1.15
 

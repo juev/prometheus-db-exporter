@@ -41,6 +41,7 @@ type Database struct {
 	MaxIdleConns int     `fig:"" default:"10"`
 	MaxOpenConns int     `fig:"" default:"10"`
 	Queries      []Query `fig:"queries"`
+	connection   string
 	db           *sql.DB
 }
 
@@ -60,8 +61,6 @@ var (
 	configuration Configuration
 	metricMap     map[string]*prometheus.GaugeVec
 	timeout       int
-	maxIdleConns  int
-	maxOpenConns  int
 	err           error
 	configFile    string
 	logFile       string
@@ -111,12 +110,12 @@ func execQuery(database Database, query Query) {
 
 	// Reconnect if we lost connection
 	if err := database.db.Ping(); err != nil {
-		logrus.Infoln("Reconnecting to DB: ", database.Database)
+		logrus.Infoln("Reconnecting to DB: ", database.connection)
 		database.db, err = sql.Open(database.Driver, database.Dsn)
 		if err != nil {
-			logrus.Errorln("Error reconnecting to db: ", err)
+			logrus.Errorf("Error reconnecting to db (%s): %v", database.connection, err)
 			metricMap["up"].WithLabelValues(database.Database).Set(0)
-			metricMap["error"].WithLabelValues(database.Database, query.Name, "").Set(1)
+			metricMap["error"].WithLabelValues(database.Database, query.Name, "fatal").Set(1)
 			return
 		}
 		database.db.SetMaxIdleConns(database.MaxIdleConns)
@@ -131,7 +130,7 @@ func execQuery(database Database, query Query) {
 	rows, err := database.db.QueryContext(ctx, query.SQL)
 	if err != nil {
 		logrus.Errorf("query '%s' failed: %v", query.Name, err)
-		metricMap["error"].WithLabelValues(database.Database, query.Name, "").Set(1)
+		metricMap["error"].WithLabelValues(database.Database, query.Name, "fatal").Set(1)
 		return
 	}
 	defer rows.Close()
@@ -148,7 +147,7 @@ func execQuery(database Database, query Query) {
 	for rows.Next() {
 		err = rows.Scan(valuePtrs...)
 		if err != nil {
-			logrus.Error("Error on scan: ", err)
+			logrus.Errorf("Error on scan: %v", err)
 			break
 		}
 
@@ -225,6 +224,7 @@ func main() {
 	timeout = configuration.QueryTimeout
 	cron := gocron.NewScheduler(time.UTC)
 	for _, database := range configuration.Databases {
+		database.connection = fmt.Sprintf("%s:%d/%s", database.Host, database.Port, database.Database)
 		// connect to database
 		if database.Driver == "postgres" {
 			database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable", database.User, database.Password, database.Host, database.Port, database.Database)
@@ -234,7 +234,7 @@ func main() {
 		} else {
 			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", database.User, database.Password, database.Host, database.Port, database.Database)
 		}
-		logrus.Infoln("Connecting to DB:", database.Database)
+		logrus.Infoln("Connecting to DB:", database.connection)
 		database.db, err = sql.Open(database.Driver, database.Dsn)
 		if err != nil {
 			logrus.Errorln("Error connecting to db: ", err)
@@ -249,7 +249,7 @@ func main() {
 				cron.Every(uint64(query.Interval)).Minutes().Do(execQuery, database, query)
 			}
 		} else {
-			logrus.Errorf("Error connecting to db '%s': %v", database.Database, err)
+			logrus.Errorf("Error connecting to db '%s': %v", database.connection, err)
 		}
 	}
 
