@@ -1,5 +1,6 @@
 # prometheus-db-exporter
 
+TODO: update README file with new changes
 ## Description
 
 A [Prometheus](https://prometheus.io/) exporter for DB (Oracle, Postgres, Mysql). All requests are launched in parallel processes and do not block the HTTP entry point of Prometheus.
