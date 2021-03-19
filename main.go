@@ -28,8 +28,8 @@ var (
 	err              error
 	vClient          *vault.Client
 	consulConfigPath string
-	consulAddress    string
 	consulToken      string
+	vaultAddress     string
 	jwtPath          string
 	vaultPath        string
 	vaultRole        string
@@ -54,8 +54,8 @@ func main() {
 	vaultRole = envOrDie("VAULT_ROLE")
 	vaultSecretPath = envOrDie("VAULT_SECRET_PATH")
 	consulConfigPath = envOrDie("CONSUL_CONFIG_PATH")
-	consulAddress = envOrDie("CONSUL_ADDR")
 
+	vaultAddress = os.Getenv("VAULT_ADDR")
 	vaultToken = os.Getenv("VAULT_TOKEN")
 
 	consulToken = readVaultValue(vaultConsulToken)
@@ -64,7 +64,6 @@ func main() {
 	scheduler.SetMaxConcurrentJobs(5, gocron.WaitMode)
 
 	config := consulapi.DefaultConfig()
-	config.Address = consulAddress
 	config.Token = consulToken
 	c, err := consulapi.NewClient(config)
 	if err != nil {
@@ -100,6 +99,11 @@ func initVault(jwtPath, vaultPath, vaultRole string) error {
 	vaultClient, err := vault.NewClient(vault.DefaultConfig())
 	if err != nil {
 		log.Errorf("error creating vaultClient: %v", err)
+		return err
+	}
+	err = vaultClient.SetAddress(vaultAddress)
+	if err != nil {
+		log.Errorf("error setting address on vaultClient: %v", err)
 		return err
 	}
 	vaultResp, err := vaultClient.Logical().Write(
