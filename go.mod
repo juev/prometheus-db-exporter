@@ -7,7 +7,7 @@ require (
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/godror/godror v0.24.4
 	github.com/hashicorp/consul/api v1.8.1
-	github.com/hashicorp/vault/api v1.0.4
+	github.com/hashicorp/vault/api v1.1.0
 	github.com/lib/pq v1.10.0
 	github.com/prometheus/client_golang v1.9.0
 	github.com/sirupsen/logrus v1.8.0
