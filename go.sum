@@ -70,6 +70,8 @@ github.com/ghodss/yaml v1.0.0/go.mod h1:4dBDuWmgqj2HViK6kFavaiC9ZROes6MMH2rRYeME
 github.com/go-asn1-ber/asn1-ber v1.3.1/go.mod h1:hEBeB/ic+5LoWskz+yKT7vGhhPYkProFKoKdwZRWMe0=
 github.com/go-co-op/gocron v1.4.0 h1:mNfuUWxLEObW0nR7y+U/2ZG2VP+0DMZyvXFmwLT/Hzg=
 github.com/go-co-op/gocron v1.4.0/go.mod h1:7MgKum7jD7YgIRj7Zx7K1iJKAf1MlSIsEieRl18+KyU=
+github.com/go-co-op/gocron v1.5.0 h1:tIiwAPwKGcazVFJTNmGe0wE73UpZSEHovoahqGGx9+c=
+github.com/go-co-op/gocron v1.5.0/go.mod h1:7MgKum7jD7YgIRj7Zx7K1iJKAf1MlSIsEieRl18+KyU=
 github.com/go-kit/kit v0.8.0/go.mod h1:xBxKIO96dXMWWy0MnWVtmwkA9/13aqxPnvrjFYMA2as=
 github.com/go-kit/kit v0.9.0/go.mod h1:xBxKIO96dXMWWy0MnWVtmwkA9/13aqxPnvrjFYMA2as=
 github.com/go-kit/kit v0.10.0/go.mod h1:xUsJbQ/Fp4kEt7AFgCuvyX4a71u8h9jB8tj/ORgOZ7o=
