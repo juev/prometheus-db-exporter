@@ -5,7 +5,7 @@ go 1.15
 require (
 	github.com/go-co-op/gocron v1.5.0
 	github.com/go-sql-driver/mysql v1.6.0
-	github.com/godror/godror v0.24.5
+	github.com/godror/godror v0.24.6
 	github.com/hashicorp/consul/api v1.8.1
 	github.com/hashicorp/vault/api v1.1.0
 	github.com/lib/pq v1.10.1
