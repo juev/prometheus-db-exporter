@@ -3,7 +3,7 @@ module github.com/juev/prometheus-db-exporter
 go 1.15
 
 require (
-	github.com/go-co-op/gocron v1.6.1
+	github.com/go-co-op/gocron v1.6.2
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/godror/godror v0.25.1
 	github.com/google/btree v1.0.0 // indirect
