@@ -8,7 +8,7 @@ require (
 	github.com/godror/godror v0.25.3
 	github.com/google/btree v1.0.0 // indirect
 	github.com/hashicorp/consul/api v1.9.1
-	github.com/hashicorp/vault/api v1.1.0
+	github.com/hashicorp/vault/api v1.1.1
 	github.com/lib/pq v1.10.2
 	github.com/prometheus/client_golang v1.11.0
 	github.com/sirupsen/logrus v1.8.1
