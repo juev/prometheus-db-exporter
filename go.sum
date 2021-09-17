@@ -85,8 +85,8 @@ github.com/go-test/deep v1.0.2-0.20181118220953-042da051cf31/go.mod h1:wGDj63lr6
 github.com/go-test/deep v1.0.2 h1:onZX1rnHT3Wv6cqNgYyFOOlgVKJrksuCMCRvJStbMYw=
 github.com/go-test/deep v1.0.2/go.mod h1:wGDj63lr65AM2AQyKZd/NYHGb0R+1RLqB8NKt3aSFNA=
 github.com/godbus/dbus v0.0.0-20190422162347-ade71ed3457e/go.mod h1:bBOAhwG1umN6/6ZUMtDFBMQR8jRg9O75tm9K00oMsK4=
-github.com/godror/godror v0.25.4 h1:IBlFGYMCAEPlu661ukx2HATTO9slGPJFYS+ftIesyoM=
-github.com/godror/godror v0.25.4/go.mod h1:1QCn6oXh3r+IlB3DLE8V6qkHXLSHd18a3Hw7szQ9/3Y=
+github.com/godror/godror v0.25.5 h1:Mf1rbyEpUFshdQmHHlCWnGyqDkiwB/fKFLTmfnVdrNc=
+github.com/godror/godror v0.25.5/go.mod h1:1QCn6oXh3r+IlB3DLE8V6qkHXLSHd18a3Hw7szQ9/3Y=
 github.com/gogo/protobuf v1.1.1/go.mod h1:r8qH/GZQm5c6nD/R0oafs1akxWv10x8SbQlK7atdtwQ=
 github.com/gogo/protobuf v1.2.1/go.mod h1:hp+jE20tsWTFYpLwKvXlhS1hjn+gTNwPg2I6zVXpSg4=
 github.com/gogo/protobuf v1.3.1/go.mod h1:SlYgWuQ5SjCEi6WLHjHCa1yvBfUnHcTbrrZtXPKa29o=
