@@ -3,6 +3,8 @@ package main
 import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/godror/godror"
+	"github.com/prometheus/client_golang/prometheus"
+
 	_ "github.com/lib/pq"
 
 	"context"
@@ -10,79 +12,78 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
-var (
-	metricMap map[string]*prometheus.GaugeVec
-)
-
 func init() {
-	metricMap = map[string]*prometheus.GaugeVec{
-		"query": prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "query_value",
-			Help:      "Value of Business metrics from Database",
-		}, []string{"database", "query", "column"}),
-		"error": prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "query_error",
-			Help:      "Result of last query, 1 if we have errors on running query",
-		}, []string{"database", "query", "column"}),
-		"duration": prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "query_duration_seconds",
-			Help:      "Duration of the query in seconds",
-		}, []string{"database", "query"}),
-		"up": prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "up",
-			Help:      "Database status",
-		}, []string{"database"}),
-		"stats": prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: exporter,
-			Name:      "stats",
-			Help:      "Database stats (OpenConnections, InUse, Idle etc)",
-		}, []string{"database", "metric"}),
-	}
-	for _, metric := range metricMap {
-		prometheus.MustRegister(metric)
-	}
+	queryGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "query_value",
+		Help:      "Value of Business metrics from Database",
+	}, []string{"id", "database", "query", "column"})
+
+	prometheus.MustRegister(queryGaugeVec)
+
+	errorGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "query_error",
+		Help:      "Result of last query, 1 if we have errors on running query",
+	}, []string{"id", "database", "query"})
+
+	prometheus.MustRegister(errorGaugeVec)
+
+	durationGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "query_duration_seconds",
+		Help:      "Duration of the query in seconds",
+	}, []string{"id", "database", "query"})
+
+	prometheus.MustRegister(durationGaugeVec)
+
+	upGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "up",
+		Help:      "Database status, 1 if connect successful",
+	}, []string{"id", "database"})
+
+	prometheus.MustRegister(upGaugeVec)
 }
 
 func execQuery(database *Database, query Query) {
-
 	defer func(begun time.Time) {
 		duration := time.Since(begun).Seconds()
-		metricMap["duration"].WithLabelValues(database.Database, query.Name).Set(duration)
+		durationChannel <- DurationMetric{
+			Id:       (*database).Id,
+			Database: (*database).Database,
+			Query:    query.Name,
+			Value:    duration,
+		}
 	}(time.Now())
 
-	// Reconnect if we lost connection
-	if err := database.pool.Ping(); err != nil {
-		log.Errorf("Error on connect to db (%s) with query (%s): %v", database.connection, query.Name, err)
-		metricMap["up"].WithLabelValues(database.Database).Set(0)
-		metricMap["error"].WithLabelValues(database.Database, query.Name, "fatal").Set(1)
+	if !pingDB(database, query.Name) {
 		return
 	}
-	metricMap["up"].WithLabelValues(database.Database).Set(1)
-	metricMap["error"].WithLabelValues(database.Database, query.Name, "fatal").Set(0)
 
 	log.Infof("Start query `%v@%v`", database.connection, query.Name)
 
 	// query db
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(queryTimeout)*time.Second)
 	defer cancel()
 
 	rows, err := database.pool.QueryContext(ctx, query.SQL)
+
 	if err != nil {
-		log.Errorf("query '%s' failed: %v", query.Name, err)
-		metricMap["error"].WithLabelValues(database.Database, query.Name, "fatal").Set(1)
+		log.Errorf("Query '%v@%s' failed: %v", database.connection, query.Name, err)
+		errorChannel <- ErrorMetric{
+			Id:       (*database).Id,
+			Database: (*database).Database,
+			Query:    query.Name,
+			Value:    1,
+		}
 		return
 	}
 	defer func() {
@@ -91,6 +92,13 @@ func execQuery(database *Database, query Query) {
 			log.Errorf("Error on closing rows: %v", err)
 		}
 	}()
+
+	errorChannel <- ErrorMetric{
+		Id:       (*database).Id,
+		Database: (*database).Database,
+		Query:    query.Name,
+		Value:    0,
+	}
 
 	columns, _ := rows.Columns()
 	count := len(columns)
@@ -109,15 +117,24 @@ func execQuery(database *Database, query Query) {
 		}
 
 		for i, column := range columns {
-			metricMap["error"].WithLabelValues(database.Database, query.Name, column).Set(0)
 			float, err := dbToFloat64(values[i])
 			if err != nil {
 				log.Errorf("Cannot convert value '%s' to float on query '%s': %v", values[i].(string), query.Name, err)
-				metricMap["error"].WithLabelValues(database.Database, query.Name, column).Set(1)
-				return
+				errorChannel <- ErrorMetric{
+					Id:       (*database).Id,
+					Database: (*database).Database,
+					Query:    query.Name,
+					Value:    1,
+				}
+				continue
 			}
-			metricMap["query"].With(prometheus.Labels{"database": database.Database, "query": query.Name, "column": column}).Set(float)
-			metricMap["error"].WithLabelValues(database.Database, query.Name, column).Set(0)
+			queryChannel <- QueryMetric{
+				Id:       (*database).Id,
+				Database: (*database).Database,
+				Query:    query.Name,
+				Column:   column,
+				Value:    float,
+			}
 		}
 	}
 }
@@ -158,4 +175,14 @@ func dbToFloat64(t interface{}) (float64, error) {
 	default:
 		return math.NaN(), nil
 	}
+}
+
+func pingDB(db *Database, query string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+	if err := db.pool.PingContext(ctx); err != nil {
+		log.Errorf("Error on check connection (ping) on db (%v@%v): %v", db.Id, query, err)
+		return false
+	}
+	return true
 }

@@ -7,28 +7,59 @@ import (
 	"os"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/fsnotify/fsnotify"
 	"github.com/go-co-op/gocron"
 
-	consulapi "github.com/hashicorp/consul/api"
 	vault "github.com/hashicorp/vault/api"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+
+	_ "net/http/pprof"
 )
 
 const (
-	namespace        = "db"
-	exporter         = "exporter"
-	vaultConfigName  = "config"
-	vaultConsulToken = "token"
+	namespace       = "db"
+	exporter        = "exporter"
+	vaultConfigName = "config"
+	configFile      = "./config/config.yaml"
+	timeout         = 24
+	queryTimeout    = 35
 )
 
+type QueryMetric struct {
+	Id       string
+	Database string
+	Query    string
+	Column   string
+	Value    float64
+}
+
+type ErrorMetric struct {
+	Id       string
+	Database string
+	Query    string
+	Value    float64
+}
+
+type DurationMetric struct {
+	Id       string
+	Database string
+	Query    string
+	Value    float64
+}
+
+type UpMetric struct {
+	Id       string
+	Database string
+	Value    float64
+}
+
 var (
-	timeout          int
 	err              error
 	vClient          *vault.Client
-	consulConfigPath string
-	consulToken      string
 	vaultAddress     string
 	jwtPath          string
 	vaultPath        string
@@ -36,6 +67,14 @@ var (
 	vaultSecretPath  string
 	vaultToken       string
 	scheduler        *gocron.Scheduler
+	queryChannel     chan QueryMetric
+	errorChannel     chan ErrorMetric
+	durationChannel  chan DurationMetric
+	upChannel        chan UpMetric
+	queryGaugeVec    *prometheus.GaugeVec
+	errorGaugeVec    *prometheus.GaugeVec
+	durationGaugeVec *prometheus.GaugeVec
+	upGaugeVec       *prometheus.GaugeVec
 )
 
 func main() {
@@ -45,7 +84,6 @@ func main() {
 			log.FieldKeyTime: "@timestamp",
 			log.FieldKeyMsg:  "message"}})
 
-	timeout = 10
 	prometheusConnection := "0.0.0.0:9103"
 
 	//in case of vault usage these vars should be set
@@ -53,28 +91,47 @@ func main() {
 	vaultPath = envOrDie("VAULT_PATH")
 	vaultRole = envOrDie("VAULT_ROLE")
 	vaultSecretPath = envOrDie("VAULT_SECRET_PATH")
-	consulConfigPath = envOrDie("CONSUL_CONFIG_PATH")
 
 	vaultAddress = os.Getenv("VAULT_ADDR")
 	vaultToken = os.Getenv("VAULT_TOKEN")
 
-	consulToken = readVaultValue(vaultConsulToken)
-
 	scheduler = gocron.NewScheduler(time.UTC)
-	scheduler.SetMaxConcurrentJobs(5, gocron.WaitMode)
 
-	config := consulapi.DefaultConfig()
-	config.Token = consulToken
-	c, err := consulapi.NewClient(config)
+	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Errorf("Error creating consul client: %v", err)
-		os.Exit(2)
+		log.Fatal(err)
 	}
-	kv := c.KV()
-	ch := make(chan string)
+	//defer watcher.Close()
 
-	go subscribeToChanges(consulConfigPath, ch, kv)
-	go updateConfig(ch)
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Op&fsnotify.Remove == fsnotify.Remove {
+					updateConfig()
+					err = watcher.Add(configFile)
+					if err != nil {
+						log.Errorf("Error on adding watcher: %v", err)
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Println("error:", err)
+			}
+		}
+	}()
+
+	err = watcher.Add(configFile)
+	if err != nil {
+		log.Errorf("Error on adding watcher: %v", err)
+	}
+
+	updateConfig()
 
 	log.Infof("Prometheus started and listen: %s", prometheusConnection)
 	http.Handle("/metrics", promhttp.Handler())

@@ -1,35 +1,14 @@
 # prometheus-db-exporter
 
-TODO: update README file with new changes
 ## Description
 
 A [Prometheus](https://prometheus.io/) exporter for DB (Oracle, Postgres, Mysql). All requests are launched in parallel processes and do not block the HTTP entry point of Prometheus.
-
-## Installation
-
-### Docker
-
-From the very beginning, you need to create a configuration file with a list of all connections and all the requests that you need, an example file in `config.yaml.template`.
-Just copy to `config.yaml` and fill it.
-
-You can run via Docker using an existing image. If you don't already have an Oracle server, you can run one locally in a container and then link the exporter to it.
-
-```bash
-docker run -d --name oracle -p 1521:1521 wnameless/oracle-xe-11g:16.04
-docker run -d -v `pwd`/config.yaml:/config.yaml --name prometheus-db-exporter --link=oracle -p 9103:9103 juev/prometheus-db-exporter
-```
-
-Or just:
-
-```bash
-docker run --rm -v `pwd`/config.yaml:/config.yaml --name prometheus-db-exporter -p 9103:9103 juev/prometheus-db-exporter
-```
 
 ## Metrics
 
 The following metrics are exposed currently.
 
-- db_exporter_dbmetric
+- db_exporter_query_value
 - db_exporter_query_duration_seconds
 - db_exporter_query_error
 - db_exporter_up
@@ -59,40 +38,51 @@ db_exporter_up{database="oracle"} 1
 db_exporter_up{database="postgres"} 1
 ```
 
-## Config file
+## Configuration
+
+Configuration stored in two separate buckets:
+
+1. Hashicorp vault (storing database auth and connection strings)
+2. Local config file (storing database id and queries), cn be used as configMap in k8s
+
+### Config file (vault)
 
 ```yaml
-# Host, default value `0.0.0.0` (optional)
-host: 0.0.0.0
-# Port, default value `9103` (optional)
-port: 9103
-# QueryTimeout, default value `30` in seconds (optional)
-queryTimeout: 5
+---
+# Array of databases
+-
+  # ID (required)
+  id: dummy_dummy
+  # Database name (required)
+  database: dummy
+  # Database driver, default value `postgres` (optional, one of: postgres, oracle or mysql)
+  driver: oracle
+  # Host, default value `127.0.0.1`, hostname for DB (optional)
+  host: 'dummy'
+  # Password (required)
+  password: 'password'
+  # Port, default value `5432` (optional)
+  port: 5432
+  # User (required)
+  user: dummy
+  # Connection String (optional)
+  connectString: (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=host)(PORT=5432))(CONNECT_DATA=(SERVICE_NAME=dummy)))
+```
 
-# Array of databases and queries
-databases:
-    # Host, default value `127.0.0.1`, hostname for DB (optional)
-  - host: 'dummy'
-    # User (required)
-    user: dummy
-    # Port, default value `5432` (optional)
-    port: 5432
-    # Password (required)
-    password: 'password'
-    # Database name (required)
-    database: dummy
-    # Database rriver, default value `postgres` (optional, one of: postgres, oracle or mysql)
-    driver: postgres
-    # MaxIdleConns, default value `10` (optional)
-    maxIdleConns: 10
-    # MaxOpenConns, default value `10` (optional)
-    maxOpenConns: 10
-    # Aray of queries
-    queries:
-        # SQL, query (required)
-      - sql: "select numbers1 from dummy"
-        # SQL name (required)
-        name: value1
-        # Interval between queries, default value `1` in minites (optional)
-        interval: 1
+### Local config file
+
+```yaml
+---
+-
+  # Database name (required)
+  id: dummy
+  # Queries
+  queries:
+    -
+      # sql query (required)
+      sql: "select 1 from table"
+      # query name (required)
+      name: query_name
+      # interval in minutes (optional, default = 1)
+      interval: 1
 ```

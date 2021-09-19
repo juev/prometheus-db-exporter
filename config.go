@@ -3,12 +3,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"os"
+	"io/ioutil"
 	"time"
 
-	consulapi "github.com/hashicorp/consul/api"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 // Configuration struct
@@ -18,13 +17,14 @@ type Configuration struct {
 
 // Databases struct
 type Databases struct {
-	Database string `yaml:"database"`
-	Queries  []Query
+	Id      string `yaml:"id"`
+	Queries []Query
 }
 
 // Database struct
 type Database struct {
 	Dsn           string
+	Id            string `yaml:"id"`
 	Host          string `yaml:"host"`
 	User          string `yaml:"user"`
 	Password      string `yaml:"password"`
@@ -44,10 +44,6 @@ type Query struct {
 	Name     string `yaml:"name"`
 	Interval int    `yaml:"interval"`
 }
-
-var (
-	configuration Configuration
-)
 
 func (raw *Database) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type RawDatabase Database
@@ -78,123 +74,139 @@ func (raw *Query) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
-func subscribeToChanges(key string, ch chan string, kv *consulapi.KV) {
-	currentIndex := uint64(0)
-	for {
-		pair, meta, err := kv.Get(key, &consulapi.QueryOptions{
-			//Datacenter:        "dc",
-			WaitIndex: currentIndex,
-			//RequireConsistent: true,
-		})
-		if err != nil {
-			log.Errorf("Error read from KV: %v, %v", err.Error(), err)
-			os.Exit(2)
-		}
-		if pair == nil || meta == nil {
-			// Query won’t be blocked if key not found
-			time.Sleep(1 * time.Second)
-		} else {
-			ch <- string(pair.Value)
-			currentIndex = meta.LastIndex
-		}
+func updateConfig() {
+	// update configuration from vault
+	log.Info("Read database configuration from Vault")
+	dbConfig := readVaultValue(vaultConfigName)
+
+	log.Info("Read database configuration from configMap")
+	var configuration Configuration
+	err = yaml.Unmarshal([]byte(dbConfig), &configuration.Databases)
+	if err != nil {
+		log.Errorf("Cannot unmarshal key: %v", err)
+		return
 	}
-}
 
-func updateConfig(ch chan string) {
-	for data := range ch {
-		log.Info("Detected consul key change... updating configuration")
+	// Unmarshal yaml from config
+	data, err := ioutil.ReadFile(configFile)
+	if err != nil {
+		log.Errorf("Cannot read config from file: %v", err)
+		return
+	}
 
-		// update configuration from vault
-		log.Info("Read database configuration from Vault")
-		dbConfig := readVaultValue(vaultConfigName)
+	var databases []Databases
+	err = yaml.Unmarshal(data, &databases)
+	if err != nil {
+		log.Errorf("Cannot unmarshal config file: %v", err)
+		return
+	}
 
-		var tempConfiguration Configuration
-		err = yaml.Unmarshal([]byte(dbConfig), &tempConfiguration.Databases)
-		if err != nil {
-			log.Errorf("Cannot unmarshal key: %v", err)
-			break
-		}
-		configuration = tempConfiguration
+	// Close channels for ending running goroutines
+	if queryChannel != nil {
+		close(queryChannel)
+	}
+	if errorChannel != nil {
+		close(errorChannel)
+	}
+	if durationChannel != nil {
+		close(durationChannel)
+	}
+	if upChannel != nil {
+		close(upChannel)
+	}
 
-		// update connections for pool
-		for _, cDatabase := range configuration.Databases {
-			cDatabase.connection = fmt.Sprintf("%s:%d/%s", cDatabase.Host, cDatabase.Port, cDatabase.Database)
-			// connect to cDatabase
-			if cDatabase.Driver == "postgres" {
-				cDatabase.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable", cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
-			} else if cDatabase.Driver == "oracle" || cDatabase.Driver == "godror" {
-				if cDatabase.ConnectString != "" {
-					cDatabase.Dsn = fmt.Sprintf(`user="%s" password="%s" connectString="%s"`, cDatabase.User, cDatabase.Password, cDatabase.ConnectString)
-				} else {
-					cDatabase.Dsn = fmt.Sprintf(`user="%s" password="%s" connectString="%s:%d/%s"`, cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
-				}
-				cDatabase.Driver = "godror"
+	// Create new channels
+	queryChannel = make(chan QueryMetric, 1)
+	errorChannel = make(chan ErrorMetric, 1)
+	durationChannel = make(chan DurationMetric, 1)
+	upChannel = make(chan UpMetric, 1)
+
+	// Reset all metrics
+	queryGaugeVec.Reset()
+	errorGaugeVec.Reset()
+	durationGaugeVec.Reset()
+	upGaugeVec.Reset()
+
+	// Run goprocesses
+	go runQueryProcess(queryChannel)
+	go runErrorProcess(errorChannel)
+	go runDurationProcess(durationChannel)
+	go runUpProcess(upChannel)
+
+	// update connections for pool
+	for _, cDatabase := range configuration.Databases {
+		cDatabase.connection = fmt.Sprintf("%s:%d/%s", cDatabase.Host, cDatabase.Port, cDatabase.Database)
+		// connect to cDatabase
+		if cDatabase.Driver == "postgres" {
+			cDatabase.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable", cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
+		} else if cDatabase.Driver == "oracle" || cDatabase.Driver == "godror" {
+			if cDatabase.ConnectString != "" {
+				cDatabase.Dsn = fmt.Sprintf(`user="%s" password="%s" connectString="%s"`, cDatabase.User, cDatabase.Password, cDatabase.ConnectString)
 			} else {
-				cDatabase.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
+				cDatabase.Dsn = fmt.Sprintf(`user="%s" password="%s" connectString="%s:%d/%s"`, cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
 			}
-			log.Infoln("Open connection to DB:", cDatabase.connection)
-			cDatabase.pool, err = sql.Open(cDatabase.Driver, cDatabase.Dsn)
-			if err != nil {
-				log.Errorf("Connection error to db: %v", err)
-				break
-			}
-			defer func() {
-				log.Info("Closing connection: %s", cDatabase.Database)
-				err := cDatabase.pool.Close()
-				if err != nil {
-					log.Errorf("Error on closing connetcion: %v", err)
-				}
-			}()
-			cDatabase.pool.SetConnMaxLifetime(5 * time.Minute)
-			cDatabase.pool.SetMaxIdleConns(cDatabase.MaxIdleCons)
-			cDatabase.pool.SetMaxOpenConns(cDatabase.MaxOpenCons)
+			cDatabase.Driver = "godror"
+		} else {
+			cDatabase.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
 		}
-
-		// Unmarshal yaml from consul
-		var databases []Databases
-		err = yaml.Unmarshal([]byte(data), &databases)
+		log.Infoln("Setup connection for DB:", cDatabase.connection)
+		cDatabase.pool, err = sql.Open(cDatabase.Driver, cDatabase.Dsn)
 		if err != nil {
-			log.Errorf("Cannot unmarshal config file: %v", err)
-			break
-		}
-
-		scheduler.Clear()
-		for _, databaseA := range databases {
-			var cDatabase Database
-			for _, db := range configuration.Databases {
-				if db.Database == databaseA.Database {
-					cDatabase = *db
-					break
-				}
+			log.Errorf("Error on setting connection to db (%s): %v", cDatabase.connection, err)
+			upChannel <- UpMetric{
+				Id:       (*cDatabase).Id,
+				Database: (*cDatabase).Database,
+				Value:    0,
 			}
+			continue
+		}
+		cDatabase.pool.SetConnMaxLifetime(5 * time.Minute)
+		cDatabase.pool.SetMaxIdleConns(cDatabase.MaxIdleCons)
+		cDatabase.pool.SetMaxOpenConns(cDatabase.MaxOpenCons)
+	}
 
-			if cDatabase.Database == "" {
+	scheduler.Clear()
+
+	for _, databaseA := range databases {
+		for _, db := range configuration.Databases {
+			if db.Id == databaseA.Id {
+				if err != nil {
+					log.Errorf("Error on creating job pingDB (%v):, %v", db.Database, err)
+				}
+				for _, query := range databaseA.Queries {
+					_, err := scheduler.Every(query.Interval*60).Seconds().Do(execQuery, db, query)
+					if err != nil {
+						log.Errorf("Error creating job %v@%v: %v", db.Database, query.Name, err)
+						continue
+					}
+				}
 				break
 			}
-
-			_, err := scheduler.Every(60).Second().Do(getDBStats, &cDatabase)
-			if err != nil {
-				log.Errorf("Error on creating job: %v", err)
-			}
-			// create cron jobs for every query on cDatabase
-			for _, query := range databaseA.Queries {
-				_, err := scheduler.Every(query.Interval*60).Seconds().Do(execQuery, &cDatabase, query)
-				if err != nil {
-					log.Errorf("Error creating job: %v", err)
-					break
-				}
-			}
 		}
+	}
+	scheduler.StartAsync()
+}
 
-		scheduler.StartAsync()
+func runQueryProcess(c chan QueryMetric) {
+	for val := range c {
+		queryGaugeVec.WithLabelValues(val.Id, val.Database, val.Query, val.Column).Set(val.Value)
 	}
 }
 
-func getDBStats(db *Database) {
-	stats := db.pool.Stats()
-	metricMap["stats"].WithLabelValues(db.Database, "idle").Set(float64(stats.Idle))
-	metricMap["stats"].WithLabelValues(db.Database, "inUse").Set(float64(stats.InUse))
-	metricMap["stats"].WithLabelValues(db.Database, "openConnections").Set(float64(stats.OpenConnections))
-	metricMap["stats"].WithLabelValues(db.Database, "waitCount").Set(float64(stats.WaitCount))
-	metricMap["stats"].WithLabelValues(db.Database, "waitDuration").Set(float64(stats.WaitDuration))
+func runErrorProcess(c chan ErrorMetric) {
+	for val := range c {
+		errorGaugeVec.WithLabelValues(val.Id, val.Database, val.Query).Set(val.Value)
+	}
+}
+
+func runDurationProcess(c chan DurationMetric) {
+	for val := range c {
+		durationGaugeVec.WithLabelValues(val.Id, val.Database, val.Query).Set(val.Value)
+	}
+}
+
+func runUpProcess(c chan UpMetric) {
+	for val := range c {
+		upGaugeVec.WithLabelValues(val.Id, val.Database).Set(val.Value)
+	}
 }
