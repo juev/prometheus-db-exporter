@@ -63,7 +63,7 @@ func execQuery(database *Database, query Query) {
 			float, errFloat := strconv.ParseFloat(string(*values[i].(*sql.RawBytes)), 64)
 
 			if errFloat != nil {
-				sugar.Errorf("Cannot convert value '%s' to float on query '%s': %v", values[i].(string), query.Name, err)
+				sugar.Errorf("Cannot convert value '%s' to float on query '%s': %v", string(*values[i].(*sql.RawBytes)), query.Name, err)
 				errorGaugeVec.WithLabelValues(database.ID, database.Database, query.Name).Set(1)
 				queryGaugeVec.DeleteLabelValues(database.ID, database.Database, query.Name, column)
 
