@@ -85,4 +85,6 @@ Configuration stored in two separate buckets:
       name: query_name
       # interval in minutes (optional, default = 1)
       interval: 1
+      # timeout for query in seconds (optional, default = 15)
+      timeout: 15
 ```

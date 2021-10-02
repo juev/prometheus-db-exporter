@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.elastic.co/ecszap"
+	"go.uber.org/zap"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-co-op/gocron"
@@ -15,9 +18,6 @@ import (
 	vault "github.com/hashicorp/vault/api"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
-
-	_ "net/http/pprof"
 )
 
 const (
@@ -25,64 +25,56 @@ const (
 	exporter        = "exporter"
 	vaultConfigName = "config"
 	configFile      = "./config/config.yaml"
-	timeout         = 24
-	queryTimeout    = 35
+	timeout         = 15
+	pingTimeout     = 10
 )
 
-type QueryMetric struct {
-	Id       string
-	Database string
-	Query    string
-	Column   string
-	Value    float64
-}
-
-type ErrorMetric struct {
-	Id       string
-	Database string
-	Query    string
-	Value    float64
-}
-
-type DurationMetric struct {
-	Id       string
-	Database string
-	Query    string
-	Value    float64
-}
-
-type UpMetric struct {
-	Id       string
-	Database string
-	Value    float64
-}
-
 var (
-	err              error
-	vClient          *vault.Client
-	vaultAddress     string
-	jwtPath          string
-	vaultPath        string
-	vaultRole        string
-	vaultSecretPath  string
-	vaultToken       string
-	scheduler        *gocron.Scheduler
-	queryChannel     chan QueryMetric
-	errorChannel     chan ErrorMetric
-	durationChannel  chan DurationMetric
-	upChannel        chan UpMetric
-	queryGaugeVec    *prometheus.GaugeVec
-	errorGaugeVec    *prometheus.GaugeVec
-	durationGaugeVec *prometheus.GaugeVec
-	upGaugeVec       *prometheus.GaugeVec
+	vClient         *vault.Client
+	vaultAddress    string
+	jwtPath         string
+	vaultPath       string
+	vaultRole       string
+	vaultSecretPath string
+	vaultToken      string
+	scheduler       *gocron.Scheduler
+	sugar           *zap.SugaredLogger
+	configuration   Configuration
+
+	queryGaugeVec = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "query_value",
+		Help:      "Value of Business metrics from Database",
+	}, []string{"id", "database", "query", "column"})
+
+	errorGaugeVec = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "query_error",
+		Help:      "Result of last query, 1 if we have errors on running query",
+	}, []string{"id", "database", "query"})
+
+	durationGaugeVec = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "query_duration_seconds",
+		Help:      "Duration of the query in seconds",
+	}, []string{"id", "database", "query"})
+
+	upGaugeVec = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: exporter,
+		Name:      "up",
+		Help:      "Database status, 1 if connect successful",
+	}, []string{"id", "database"})
 )
 
 func main() {
-	log.SetOutput(os.Stdout)
-	log.SetFormatter(&log.JSONFormatter{
-		FieldMap: log.FieldMap{
-			log.FieldKeyTime: "@timestamp",
-			log.FieldKeyMsg:  "message"}})
+	encoderConfig := ecszap.NewDefaultEncoderConfig()
+	core := ecszap.NewCore(encoderConfig, os.Stdout, zap.DebugLevel)
+	logger := zap.New(core, zap.AddCaller())
+	sugar = logger.Sugar()
 
 	prometheusConnection := "0.0.0.0:9103"
 
@@ -99,7 +91,7 @@ func main() {
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Fatal(err)
+		sugar.Fatal(err)
 	}
 	//defer watcher.Close()
 
@@ -110,97 +102,117 @@ func main() {
 				if !ok {
 					return
 				}
+
 				if event.Op&fsnotify.Remove == fsnotify.Remove {
 					updateConfig()
+
 					err = watcher.Add(configFile)
+
 					if err != nil {
-						log.Errorf("Error on adding watcher: %v", err)
+						sugar.Errorf("Error on adding watcher: %v", err)
 					}
 				}
-			case err, ok := <-watcher.Errors:
+			case errWatch, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Println("error:", err)
+
+				sugar.Info("error:", errWatch)
 			}
 		}
 	}()
 
-	err = watcher.Add(configFile)
-	if err != nil {
-		log.Errorf("Error on adding watcher: %v", err)
+	if err := watcher.Add(configFile); err != nil {
+		sugar.Errorf("Error on adding watcher: %v", err)
 	}
 
 	updateConfig()
 
-	log.Infof("Prometheus started and listen: %s", prometheusConnection)
+	sugar.Infof("Prometheus started and listen: %s", prometheusConnection)
 	http.Handle("/metrics", promhttp.Handler())
-	err = http.ListenAndServe(prometheusConnection, nil)
-	if err != nil {
-		log.Fatalln("Fatal error on serving metrics:", err)
+
+	if err := http.ListenAndServe(prometheusConnection, nil); err != nil {
+		sugar.Fatal("Fatal error on serving metrics:", err)
 	}
 }
 
 func initVault(jwtPath, vaultPath, vaultRole string) error {
 	if vaultToken != "" {
 		vClient, _ = vault.NewClient(vault.DefaultConfig())
+
 		return nil
 	}
+
 	vaultPath = fmt.Sprintf("auth/%s/login", vaultPath)
 	bytes, err := ioutil.ReadFile(jwtPath)
+
 	if err != nil {
-		log.Errorf("error reading jwtPath: %v", err)
+		sugar.Error("error reading jwtPath: %v", err)
+
 		return err
 	}
+
 	jwt := string(bytes)
 	vaultClient, err := vault.NewClient(vault.DefaultConfig())
+
 	if err != nil {
-		log.Errorf("error creating vaultClient: %v", err)
+		sugar.Errorf("error creating vaultClient: %v", err)
+
 		return err
 	}
-	err = vaultClient.SetAddress(vaultAddress)
-	if err != nil {
-		log.Errorf("error setting address on vaultClient: %v", err)
+
+	if err := vaultClient.SetAddress(vaultAddress); err != nil {
+		sugar.Errorf("error setting address on vaultClient: %v", err)
+
 		return err
 	}
+
 	vaultResp, err := vaultClient.Logical().Write(
 		vaultPath,
 		map[string]interface{}{
 			"role": vaultRole,
 			"jwt":  jwt,
 		})
+
 	if err != nil {
-		log.Errorf("Error get response from vaultClient: %v", err)
+		sugar.Errorf("Error get response from vaultClient: %v", err)
+
 		return err
 	}
+
 	vClient = vaultClient
 	vClient.SetToken(vaultResp.Auth.ClientToken)
+
 	return nil
 }
 
 func readVaultValue(valueName string) string {
 	if err := initVault(jwtPath, vaultPath, vaultRole); err != nil {
-		log.Errorf("vault init failed: %v", err)
+		sugar.Errorf("vault init failed: %v", err)
 		os.Exit(1)
 	}
+
 	vaultResp, err := vClient.Logical().Read(vaultSecretPath)
+
 	if err != nil {
-		log.Errorf("vault get secret path failed: %v", err)
+		sugar.Errorf("vault get secret path failed: %v", err)
 		os.Exit(1)
 	}
-	_, ok := vaultResp.Data[valueName]
-	if !ok {
-		log.Errorf("vault get config failed: %v", err)
+
+	if _, ok := vaultResp.Data[valueName]; !ok {
+		sugar.Errorf("vault get config failed: %v", err)
 		os.Exit(1)
 	}
+
 	return fmt.Sprintf("%v", vaultResp.Data[valueName])
 }
 
 func envOrDie(env string) string {
 	v, exists := os.LookupEnv(env)
 	if !exists {
-		log.Error(fmt.Errorf("%s not set", env), ": missing parameter")
+		sugar.Errorf("%s not set : missing parameter", env)
 		os.Exit(1)
 	}
+
 	return v
 }

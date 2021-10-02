@@ -3,3 +3,5 @@
   queries:
     - sql: "select 1 from first_db.table where type='buy'"
       name: first_count
+      interval: 4
+      timeout: 5

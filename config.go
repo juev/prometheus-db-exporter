@@ -1,30 +1,30 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/ioutil"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	goora "github.com/sijms/go-ora/v2"
+
 	"gopkg.in/yaml.v3"
 )
 
-// Configuration struct
-type Configuration struct {
-	Databases []*Database
-}
+// Configuration struct.
+type Configuration []*Database
 
-// Databases struct
+// Databases struct.
 type Databases struct {
-	Id      string `yaml:"id"`
+	ID      string `yaml:"id"`
 	Queries []Query
 }
 
-// Database struct
+// Database struct.
 type Database struct {
 	Dsn           string
-	Id            string `yaml:"id"`
+	ID            string `yaml:"id"`
 	Host          string `yaml:"host"`
 	User          string `yaml:"user"`
 	Password      string `yaml:"password"`
@@ -38,15 +38,17 @@ type Database struct {
 	pool          *sql.DB
 }
 
-// Query struct
+// Query struct.
 type Query struct {
 	SQL      string `yaml:"sql"`
 	Name     string `yaml:"name"`
 	Interval int    `yaml:"interval"`
+	Timeout  int    `yaml:"timeout"`
 }
 
-func (raw *Database) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (d *Database) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type RawDatabase Database
+
 	var defaults = RawDatabase{
 		Host:          "127.0.0.1",
 		Port:          5432,
@@ -55,158 +57,155 @@ func (raw *Database) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		MaxOpenCons:   5,
 		ConnectString: "",
 	}
+
 	if err := unmarshal(&defaults); err != nil {
 		return err
 	}
-	*raw = Database(defaults)
+
+	*d = Database(defaults)
+
 	return nil
 }
 
 func (raw *Query) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type RawQuery Query
+
 	var defaults = RawQuery{
 		Interval: 1,
+		Timeout:  timeout,
 	}
+
 	if err := unmarshal(&defaults); err != nil {
 		return err
 	}
+
 	*raw = Query(defaults)
+
 	return nil
 }
 
 func updateConfig() {
 	// update configuration from vault
-	log.Info("Read database configuration from Vault")
+	sugar.Info("Read database configuration from Vault")
+
 	dbConfig := readVaultValue(vaultConfigName)
 
-	log.Info("Read database configuration from configMap")
-	var configuration Configuration
-	err = yaml.Unmarshal([]byte(dbConfig), &configuration.Databases)
-	if err != nil {
-		log.Errorf("Cannot unmarshal key: %v", err)
+	sugar.Info("Read database configuration from configMap")
+
+	tmpConfiguration := Configuration{}
+	if err := yaml.Unmarshal([]byte(dbConfig), &tmpConfiguration); err != nil {
+		sugar.Errorf("Cannot unmarshal key: %v", err)
+
 		return
 	}
 
 	// Unmarshal yaml from config
 	data, err := ioutil.ReadFile(configFile)
 	if err != nil {
-		log.Errorf("Cannot read config from file: %v", err)
+		sugar.Errorf("Cannot read config from file: %v", err)
+
 		return
 	}
 
 	var databases []Databases
-	err = yaml.Unmarshal(data, &databases)
-	if err != nil {
-		log.Errorf("Cannot unmarshal config file: %v", err)
+
+	if err := yaml.Unmarshal(data, &databases); err != nil {
+		sugar.Errorf("Cannot unmarshal config file: %v", err)
+
 		return
 	}
 
-	// Close channels for ending running goroutines
-	if queryChannel != nil {
-		close(queryChannel)
-	}
-	if errorChannel != nil {
-		close(errorChannel)
-	}
-	if durationChannel != nil {
-		close(durationChannel)
-	}
-	if upChannel != nil {
-		close(upChannel)
+	// Clear jobs
+	scheduler.Stop()
+	scheduler.Clear()
+
+	// Close connections
+	for _, database := range configuration {
+		if database.pool != nil {
+			if err := database.pool.Close(); err != nil {
+				sugar.Errorf("Cannot close connection to %s : %v", database.Database, err)
+			}
+			database.pool = nil
+		}
 	}
 
-	// Create new channels
-	queryChannel = make(chan QueryMetric, 1)
-	errorChannel = make(chan ErrorMetric, 1)
-	durationChannel = make(chan DurationMetric, 1)
-	upChannel = make(chan UpMetric, 1)
-
-	// Reset all metrics
-	queryGaugeVec.Reset()
+	// Delete all metrics
 	errorGaugeVec.Reset()
+	queryGaugeVec.Reset()
 	durationGaugeVec.Reset()
 	upGaugeVec.Reset()
 
-	// Run goprocesses
-	go runQueryProcess(queryChannel)
-	go runErrorProcess(errorChannel)
-	go runDurationProcess(durationChannel)
-	go runUpProcess(upChannel)
+	configuration = tmpConfiguration
 
 	// update connections for pool
-	for _, cDatabase := range configuration.Databases {
-		cDatabase.connection = fmt.Sprintf("%s:%d/%s", cDatabase.Host, cDatabase.Port, cDatabase.Database)
-		// connect to cDatabase
-		if cDatabase.Driver == "postgres" {
-			cDatabase.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable", cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
-		} else if cDatabase.Driver == "oracle" || cDatabase.Driver == "godror" {
-			if cDatabase.ConnectString != "" {
-				cDatabase.Dsn = fmt.Sprintf(`user="%s" password="%s" connectString="%s"`, cDatabase.User, cDatabase.Password, cDatabase.ConnectString)
-			} else {
-				cDatabase.Dsn = fmt.Sprintf(`user="%s" password="%s" connectString="%s:%d/%s"`, cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
-			}
-			cDatabase.Driver = "godror"
+	for _, database := range configuration {
+		database.connection = fmt.Sprintf("%s:%d/%s", database.Host, database.Port, database.Database)
+		// setup connection to database
+		if database.Driver == "postgres" {
+			database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable",
+				database.User, database.Password, database.Host, database.Port, database.Database)
+		} else if database.Driver == "oracle" {
+			database.Dsn = goora.BuildUrl(database.Host,
+				database.Port, database.Database, database.User, database.Password, nil)
 		} else {
-			cDatabase.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", cDatabase.User, cDatabase.Password, cDatabase.Host, cDatabase.Port, cDatabase.Database)
+			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+				database.User, database.Password, database.Host, database.Port, database.Database)
 		}
-		log.Infoln("Setup connection for DB:", cDatabase.connection)
-		cDatabase.pool, err = sql.Open(cDatabase.Driver, cDatabase.Dsn)
-		if err != nil {
-			log.Errorf("Error on setting connection to db (%s): %v", cDatabase.connection, err)
-			upChannel <- UpMetric{
-				Id:       (*cDatabase).Id,
-				Database: (*cDatabase).Database,
-				Value:    0,
-			}
-			continue
-		}
-		cDatabase.pool.SetConnMaxLifetime(5 * time.Minute)
-		cDatabase.pool.SetMaxIdleConns(cDatabase.MaxIdleCons)
-		cDatabase.pool.SetMaxOpenConns(cDatabase.MaxOpenCons)
 	}
 
-	scheduler.Clear()
+	for _, database := range databases {
+		for _, db := range configuration {
+			if db.ID == database.ID {
 
-	for _, databaseA := range databases {
-		for _, db := range configuration.Databases {
-			if db.Id == databaseA.Id {
+				// Setup connection
+				sugar.Infof("Setup connection for DB: %s", db.connection)
+				db.pool, err = sql.Open(db.Driver, db.Dsn)
+
 				if err != nil {
-					log.Errorf("Error on creating job pingDB (%v):, %v", db.Database, err)
+					sugar.Errorf("Error on setting connection to database (%s): %v", db.connection, err)
+
+					continue
 				}
-				for _, query := range databaseA.Queries {
-					_, err := scheduler.Every(query.Interval*60).Seconds().Do(execQuery, db, query)
-					if err != nil {
-						log.Errorf("Error creating job %v@%v: %v", db.Database, query.Name, err)
+
+				db.pool.SetMaxIdleConns(db.MaxIdleCons)
+				db.pool.SetMaxOpenConns(db.MaxOpenCons)
+
+				// Setup ping database
+				if _, err := scheduler.Every(60).Seconds().Do(pingDB, db); err != nil {
+					sugar.Errorf("Error on creating job pingDB (%v):, %v", db.Database, err)
+				}
+
+				// Setup queries
+				for _, query := range database.Queries {
+					tick := query.Interval * 60
+					if query.Timeout > tick {
+						tick = query.Timeout + 10
+					}
+
+					if _, err := scheduler.Every(tick).Seconds().Do(execQuery, db, query); err != nil {
+						sugar.Errorf("Error creating job %v@%v: %v", db.Database, query.Name, err)
+
 						continue
 					}
 				}
+
 				break
 			}
 		}
 	}
+
 	scheduler.StartAsync()
 }
 
-func runQueryProcess(c chan QueryMetric) {
-	for val := range c {
-		queryGaugeVec.WithLabelValues(val.Id, val.Database, val.Query, val.Column).Set(val.Value)
-	}
-}
+func pingDB(database *Database) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(pingTimeout)*time.Second)
+	defer cancel()
 
-func runErrorProcess(c chan ErrorMetric) {
-	for val := range c {
-		errorGaugeVec.WithLabelValues(val.Id, val.Database, val.Query).Set(val.Value)
-	}
-}
+	if err := database.pool.PingContext(ctx); err != nil {
+		upGaugeVec.WithLabelValues(database.ID, database.Database).Set(0)
 
-func runDurationProcess(c chan DurationMetric) {
-	for val := range c {
-		durationGaugeVec.WithLabelValues(val.Id, val.Database, val.Query).Set(val.Value)
+		return
 	}
-}
 
-func runUpProcess(c chan UpMetric) {
-	for val := range c {
-		upGaugeVec.WithLabelValues(val.Id, val.Database).Set(val.Value)
-	}
+	upGaugeVec.WithLabelValues(database.ID, database.Database).Set(1)
 }
