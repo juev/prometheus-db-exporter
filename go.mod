@@ -24,7 +24,7 @@ require (
 	github.com/prometheus/client_golang v1.11.0
 	github.com/prometheus/common v0.31.1 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
-	github.com/sijms/go-ora/v2 v2.2.9
+	github.com/sijms/go-ora/v2 v2.2.15
 	go.elastic.co/ecszap v1.0.0
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.7.0 // indirect
